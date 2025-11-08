@@ -1,64 +1,118 @@
-import express from 'express';
-import bcrypt from 'bcryptjs';
-import jwt from 'jsonwebtoken';
-import prisma from '../prisma/client.js';
+const express = require("express");
+const bcrypt = require("bcryptjs");
+const jwt = require("jsonwebtoken");
+const prisma = require("../prisma/client");
 
 const router = express.Router();
 
-// 🧾 Signup route
-router.post('/signup', async (req, res) => {
+router.post("/signup", async (req, res) => {
   try {
     const { name, email, password } = req.body;
 
-    // check if user already exists
-    const existingUser = await prisma.user.findUnique({ where: { email } });
-    if (existingUser) {
-      return res.status(400).json({ message: 'Email already registered' });
+    // Validation
+    if (!name || !email || !password) {
+      return res.status(400).json({ error: "All fields are required" });
     }
 
-    // hash password
+    // Check if user exists
+    const userExists = await prisma.user.findUnique({ where: { email } });
+    if (userExists) {
+      return res.status(400).json({ error: "User already exists" });
+    }
+
+    // Hash password
     const hashedPassword = await bcrypt.hash(password, 10);
 
-    // create user
+    // Store user into DB
     const user = await prisma.user.create({
       data: {
         name,
         email,
         password: hashedPassword,
+        role: "USER",  // force user role (admin won't sign up)
       },
     });
 
-    res.status(201).json({ message: 'User created successfully', user });
+    // Generate JWT token
+    const token = jwt.sign(
+      { id: user.id, role: user.role },
+      process.env.JWT_SECRET,
+      { expiresIn: "7d" }
+    );
+
+    res.status(201).json({
+      message: "User registered successfully",
+      token,
+      user: {
+        id: user.id,
+        name: user.name,
+        email: user.email,
+        role: user.role,
+      },
+    });
+
   } catch (error) {
-    console.error(error);
-    res.status(500).json({ message: 'Server error' });
+    console.error("❌ Signup Error:", error);
+    res.status(500).json({ error: "Internal server error" });
   }
 });
-
-// 🔑 Login route
-router.post('/login', async (req, res) => {
+// ✅ LOGIN API
+router.post("/login", async (req, res) => {
   try {
     const { email, password } = req.body;
 
-    const user = await prisma.user.findUnique({ where: { email } });
-    if (!user) {
-      return res.status(400).json({ message: 'User not found' });
+    // Check required fields
+    if (!email || !password) {
+      return res.status(400).json({ error: "Email and password required" });
     }
 
-    const isPasswordValid = await bcrypt.compare(password, user.password);
-    if (!isPasswordValid) {
-      return res.status(400).json({ message: 'Invalid password' });
-    }
-
-    const token = jwt.sign({ id: user.id, email: user.email }, process.env.JWT_SECRET, {
-      expiresIn: '1d',
+    // Find user by email
+    const user = await prisma.user.findUnique({
+      where: { email },
     });
 
-    res.json({ message: 'Login successful', token });
-  } catch (error) {
-    console.error(error);
-    res.status(500).json({ message: 'Server error' });
+    if (!user) {
+      return res.status(400).json({ error: "Invalid email or password" });
+    }
+
+    // Compare password
+    const isPasswordMatch = await bcrypt.compare(password, user.password);
+
+    if (!isPasswordMatch) {
+      return res.status(400).json({ error: "Invalid email or password" });
+    }
+
+    // Generate token
+    const token = jwt.sign(
+      { id: user.id, role: user.role },
+      process.env.JWT_SECRET,
+      { expiresIn: "7d" }
+    );
+
+    return res.json({
+      message: "Login successful",
+      token,
+      user: {
+        id: user.id,
+        name: user.name,
+        email: user.email,
+        role: user.role, // ADMIN or USER
+      },
+    });
+
+  } catch (err) {
+    console.error("❌ Login Error:", err);
+    return res.status(500).json({ error: "Internal Server Error" });
   }
 });
+const authMiddleware = require("../middleware/auth");
 
-export default router;
+// ✅ GET LOGGED-IN USER (Protected route)
+router.get("/me", authMiddleware, async (req, res) => {
+  res.json({
+    user: req.user,
+  });
+});
+
+
+module.exports = router;
